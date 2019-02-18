@@ -1,0 +1,1092 @@
+### This script:#
+###   - Imports data from experimental infection of hamsters and rats with Leptospira#
+###   - Estimates pI, the probability that each individual leptospire introduced via IP inoculation survives, and contributes to a growing infectious population#
+###   - Estimates pT, the probability that each leptospire in the inoculum crosses physical immune barriers and survives to reach the interanl tissue#
+###         --> pT was estimated using data for each route of inoculation (intact skin, shavbed skin, abraded skin, conjunctiva)#
+###         --> pT was estimated using a basic model, and using a mixture model assuming pT~Beta(alpha, beta)#
+###  LAST UPDATED JANUARY 25, 2019#
+#
+## Set working directory, load libraries and functions#
+rm(list = ls())#
+setwd('~/Dropbox/R/Hamsters/')#
+source('~/Dropbox/R/ImmuneAgeStructure/LR.test.R')#
+#
+## Set up a cluster so you can run things in parallel lower in the script. Keep this cluster open until all analyses finish running.#
+library(parallel)#
+cl = makeCluster(detectCores()-1)#
+library(binom)#
+library(TailRank)#
+#
+library(RColorBrewer)#
+cols = colorRampPalette(brewer.pal(4,"YlGnBu"))(25)#
+cols[26] = 'midnightblue'#
+plot(1:26, cex = 10, pch = 16, col = cols) # Look at all colors#
+plot(1:4, cex = 10, pch = 16, col = cols[c(7, 16, 24, 26) ]) # Choose a subset of four that show good divergence in color and in grayscale (print will be in grayscale)#
+cols = cols[c(7, 16, 24, 26) ]#
+#
+####################### INPUTS #####################
+full.dat = read.csv('Full_existing_data_Vimla.csv', header = T) # Hamster data#
+rat.data = read.csv('Ratdata.csv', header = T) # Rat data#
+#
+####################### OUTPUTS ####################
+#likelihood profile of pI estimates, hamsters:#
+plot1 = 'pI_profile.pdf' #
+## Likelihood profiles, basic model, pT, hamsters:#
+plot2 = 'Profile_intact.pdf' #
+plot3 = 'Profile_abraded.pdf' #
+plot4 = 'Profile_shaved.pdf' #
+plot5 = 'Profile_conjunctival.pdf' #
+## Likelihood profiles, mixture model, alpha, Beta, hamsters:#
+plot6 = 'Profile_mixture_hamsters.pdf'#
+#####################################################################
+##########################  SECTION 0 ###############################
+####   #
+####   Reformat data for hamsters and rats#
+#####
+#####################################################################
+#
+####    Format the IP data#
+#####################################################################
+#--------------------- Hamsters: -----------------------#
+#For each IP dose, create a table of (dose, n total, n died)#
+IP.dat = subset(full.dat, route == 'IP')[,-1]#
+doses = sort(unique(IP.dat$dose), decreasing = T) #vector of doses tested in IP trials#
+n.IP = n.died.IP = numeric(0)#
+for(ii in 1:length(doses)){#
+  dose.dat = subset(IP.dat, dose == doses[ii])#
+  n.IP[ii] = sum(dose.dat$n)#
+  n.died.IP[ii] = sum(dose.dat$died)#
+  rm(dose.dat)#
+}#
+#
+# Visualize the summarized data#
+IP.summary = data.frame(doses = doses, n.IP = n.IP, n.died.IP = n.died.IP)#
+#
+# Create a vector that repeats a 1 for every individual infected hamster and a 0 for every hamster that was not infected#
+#outcome.p1 = rep( c(rep(1, length(n.IP)), rep(0, length(n.IP)) ), times = c(n.died.IP, n.IP-n.died.IP))#
+outcome.p1 = rep(c(1,0), times = c(n.died.IP[1], n.died.IP[1]-n.IP[1])) # Initialize using info from the first row of the dose.dat data#
+for(ii in 2:length(n.IP)){#
+  outcome.p1 = c(outcome.p1, rep(c(1,0), times = c(n.died.IP[ii], n.IP[ii]-n.died.IP[ii])))#
+}#
+outcome.p1#
+doses.p1 = rep(doses, n.IP)#
+#
+# Visualize the reformatted data#
+data.frame(outcome.p1 = outcome.p1, doses.p1 = doses.p1)#
+#
+### --------------------------------------------------------------#
+####    Format data for all other routes of inoculation, hamsters#
+#####################################################################
+#Input route data#
+intact = subset(full.dat, route == 'Int.skin')#
+abraded = subset(full.dat, route == 'Epiderm')#
+shaved = subset(full.dat, route == 'Shv.skin')#
+conjunctival = subset(full.dat, route == 'Conj')#
+#
+# Write a function that creates a summary table with the total number of trials and number of infections (deaths) at a given dose#
+reformat.route = function(route.dat){#
+  doses = sort(unique(route.dat$dose))#
+  tbl = matrix(nrow = length(doses), ncol = 3, dimnames = list(doses, c('n', 'died', 'dose')))#
+  for(ii in 1:length(doses)){#
+    tbl[ii, 'n'] = sum(route.dat[route.dat$dose == doses[ii], 'n'])#
+    tbl[ii, 'died'] = sum(route.dat[route.dat$dose == doses[ii], 'died'])#
+    tbl[ii, 'dose'] = doses[ii]#
+  }#
+  tbl#
+}#
+## Get tables of n and n.died by dose for each route#
+intact.tbl = reformat.route(intact)#
+shaved.tbl = reformat.route(shaved)#
+abraded.tbl = reformat.route(abraded)#
+conjunctival.tbl = reformat.route(conjunctival)#
+#
+## Create vectors that represent the binary outcome of each infection trial in the data#
+## Create a vector of the same length representing the corresponding dose used in the trial of interest#
+# Abraded#
+Doses.abraded = rep(abraded$dose, times = abraded$n)#
+Outcomes.abraded = rep(c(1, 0), times = c(abraded$died[1], abraded$n[1]-abraded$died[1]))#
+for(ii in 2:length(abraded$died)){#
+  temp = rep(c(1, 0), times = c(abraded$died[ii], abraded$n[ii]-abraded$died[ii]))#
+  Outcomes.abraded = c(Outcomes.abraded, temp)#
+}#
+#
+# Intact#
+Doses.intact = rep(intact$dose, times = intact$n)#
+Outcomes.intact = numeric(0)#
+for(ii in 1:length(intact$died)){#
+  temp = rep(c(1, 0), times = c(intact$died[ii], intact$n[ii]-intact$died[ii]))#
+  Outcomes.intact = c(Outcomes.intact, temp)#
+}#
+#
+# Shaved#
+Doses.shaved = rep(shaved$dose, times = shaved$n)#
+Outcomes.shaved = numeric(0)#
+for(ii in 1:length(shaved$died)){#
+  temp = rep(c(1, 0), times = c(shaved$died[ii], shaved$n[ii]-shaved$died[ii]))#
+  Outcomes.shaved = c(Outcomes.shaved, temp)#
+}#
+#
+# Conjunctival#
+Doses.conjunctival = rep(conjunctival$dose, times = conjunctival$n)#
+Outcomes.conjunctival = numeric(0)#
+for(ii in 1:length(conjunctival$died)){#
+  temp = rep(c(1, 0), times = c(conjunctival$died[ii], conjunctival$n[ii]-conjunctival$died[ii]))#
+  Outcomes.conjunctival = c(Outcomes.conjunctival, temp)#
+}#
+#####################################################################
+####    Format rat data #
+#####################################################################
+#Input route data#
+abraded.rat = subset(rat.data, route == 'abraded')#
+IP.rat = subset(rat.data, route == 'IP')#
+#
+## Get tables of n and n.died by dose for each route#
+abraded.tbl.rat = reformat.route(abraded.rat)#
+IP.tbl.rat = reformat.route(IP.rat)#
+#
+# IP#
+Doses.IP.rat = rep(IP.rat$dose, times = IP.rat$n)#
+Outcomes.IP.rat = rep(c(1, 0), times = c(IP.rat$infected[1], IP.rat$n[1]-IP.rat$infected[1]))#
+for(ii in 2:length(IP.rat$infected)){#
+  temp = rep(c(1, 0), times = c(IP.rat$infected[ii], IP.rat$n[ii]-IP.rat$infected[ii]))#
+  Outcomes.IP.rat = c(Outcomes.IP.rat, temp)#
+}#
+#
+# Abraded#
+Doses.abraded.rat = rep(abraded.rat$dose, times = abraded.rat$n)#
+Outcomes.abraded.rat = numeric(0)#
+for(ii in 1:length(abraded.rat$infected)){#
+  temp = rep(c(1, 0), times = c(abraded.rat$infected[ii], abraded.rat$n[ii]-abraded.rat$infected[ii]))#
+  Outcomes.abraded.rat = c(Outcomes.abraded.rat, temp)#
+}#
+#####################################################################
+##########################  SECTION 1 ###############################
+####   #
+####   1. Use the IP data to find the MLE of pI#
+#####
+#####################################################################
+####    Estimate pI in hamsters#
+#####################################################################
+## This function calculates the likelihood of the IP data, using equation 0.11 from the methods#
+##  The output gives the negative log likelihood#
+nll.p1 = function(p1, outcome, dose){#
+  dens = function(outcome, dose){ifelse(outcome == 1, 1-(1-p1)^dose, (1-p1)^dose)}#
+  lk.vec = numeric(0)#
+  for(ii in 1:length(outcome)){#
+    lk.vec[ii] = dens(outcome[ii], dose[ii])#
+  }#
+  -sum(log(lk.vec))#
+}#
+#
+## Optimize the likelihood function#
+p1.opt = optim(par = c(p1 = .18), fn = nll.p1, method = 'Brent', outcome = outcome.p1, dose = doses.p1, lower = 0, upper = 1)#
+## View the outputs#
+p1.opt#
+#
+## RENAME THE MAXIMUM LIKELIHOOD VALUE OF P1 FOR USE IN EQUATIONS BELOW#
+p1 = p1.opt$par#
+#
+#Calculate the likelihood profile#
+p1s = c(seq(0, .1, by = .01), seq(0.1, .3, by = 0.001), seq(.31, 1, by = 0.01))#
+lk.prof = numeric(0)#
+for(ii in 1:length(p1s)){#
+  lk.prof[ii] = nll.p1(p1s[ii], outcome.p1, doses.p1)#
+}#
+#
+# Plot the likelihood profile, with the red horizontal like indicating the maximum value included in the profile CI#
+pdf(plot1)#
+par(mfrow = c(1,1))#
+plot(p1s, lk.prof, main = 'Profile, pI, hamsters', xlab = 'p1', ylab = 'negative log likelihood', type = 'l')#
+threshold = LR.Threshold(p1.opt$value, df = 1)#
+abline(h = threshold, col = 'red')#
+CI.p1 = LR.CI(threshold, lk.prof, p1s)#
+text(.5, 100, sprintf('Est = %.2g\n CI = %.2g-%.2g', p1, CI.p1[1], CI.p1[2]))#
+points(p1.opt$par, p1.opt$value, col = 'blue', pch = 8, cex = 1.2)#
+#points(full.model$par[1], p1.opt$value, col = 'yellow', pch = 16, cex = .8)#
+abline(v = p1.opt$par, lty = 2)#
+dev.off()#
+#
+# View the CI calculated above#
+CI.p1#
+##########################  SECTION 1a ###############################
+####   #
+####   Repeat pI estimation with rat data#
+#####
+#####################################################################
+#
+#####################################################################
+####    Estimate p1 using the IP rat data#
+## Optimize the likelihood function#
+p1.opt.rat = optim(par = c(p1 = .18), fn = nll.p1, method = 'Brent', outcome = Outcomes.IP.rat, dose = Doses.IP.rat, lower = 0, upper = 1)#
+## View the outputs#
+p1.opt.rat#
+#
+## SAVE THE MAXIMUM LIKELIHOOD VALUE OF P1 FOR USE IN EQUATIONS BELOW#
+p1.rat = p1.opt.rat$par#
+#
+#Calculate the likelihood profile#
+p1s.rat = c(seq(0, .1, by = .01), seq(0.1, .3, by = 0.001), seq(.31, 1, by = 0.01))#
+lk.prof.rat = numeric(0)#
+for(ii in 1:length(p1s.rat)){#
+  lk.prof.rat[ii] = nll.p1(p1s.rat[ii], Outcomes.IP.rat, Doses.IP.rat)#
+}#
+#
+# Plot the likelihood profile, with the red horizontal like indicating the maximum value included in the profile CI#
+pdf('prof_pI_rats.pdf')#
+par(mfrow = c(1,1))#
+plot(p1s.rat, lk.prof.rat, main = 'Profile, pI, rats', xlab = 'p1', ylab = 'negative log likelihood', type = 'l')#
+threshold = LR.Threshold(p1.opt.rat$value, df = 1)#
+abline(h = threshold, col = 'red')#
+CI.p1.rat = LR.CI(threshold, lk.prof.rat, p1s.rat)#
+text(.5, 25, sprintf('Est = %.2g\n CI = %.2g-%.2g', p1, CI.p1[1], CI.p1[2]))#
+points(p1.opt.rat$par, p1.opt.rat$value, col = 'blue', pch = 8, cex = 1.2)#
+#points(full.model$par[1], p1.opt$value, col = 'yellow', pch = 16, cex = .8)#
+abline(v = p1.opt.rat$par, lty = 2)#
+dev.off()#
+#
+# Output the CI calculated above#
+CI.p1.rat#
+#####################################################################
+###########################   SECTION 2   ###########################
+####   #
+####   2. Use all non-IP data to find the MLE of p_t(route) for each#
+####      tested route of inoculation. Fit using the BASIC model.#
+####      #
+#####################################################################
+#####################################################################
+#
+#####################################################################
+####    Write functions to calculate the likelihood#
+#####################################################################
+#
+#### THIS FUNCTION CALCULATES THE PROBABILITY OF OBSERVING ANY PARTICULAR BINARY INFECTION OUTCOME IN THE BASIC MODEL #
+####    *This probability is defined in equation 3 of the methods#
+####    *These probabilities will be used to calculate the overall likelihood of the data.#
+####    *Note, for D0 larger than 100, we use a normal approximation to the binomial, and #
+####     truncate the range of summation to exclude values with negligible probability density. #
+####     Do this because it is computationally intractable to calculate the exact binomial sum.#
+####     Code runs too long and you use too much memory otherwise. This approximation is highly accurate #
+####     for large sample sizes.#
+#
+Prob.inf.given.dose = function(D0, pt, p1){#
+  #Truncate the values of Db to evaluate, based on the mean and sd#
+  # of the binomial distribution#
+  #   Search within 5 sd of the mean on either side#
+  #   sd = sqrt(np(1-p))#
+  #   all other DT values will return 0 density and need not be evaluated#
+  std = (sqrt(  D0*pt*(1-pt)   )) ## Calculate the standard deviation of DT values#
+  mu = D0*pt ## Calculate the expected DT value#
+  min.search = max(c(0, mu-7.5*std)) ## Search within 7.5 standard deviations of the mean#
+  max.search = min(c(D0, mu+7.5*std)) ## All other DT values will yield negligible probability density#
+  DT = floor(min.search):ceiling(max.search) # Get a vector of all plausible DT values, given D0, pt, p1#
+  if(D0 > 10000 & std > 1){ #use normal approximaiton for high D0#
+    prob.inf.given.D0 = sum( (1-((1-p1)^DT))*dnorm(x = DT, mean = D0*pt, sd = sqrt(D0*pt*(1-pt))))#
+  }else{ #use exact binomial#
+    prob.inf.given.D0 = sum( ( 1-((1-p1)^DT) )*(dbinom(x = DT, size = D0, prob = pt))) #pt to be estimated#
+  }#
+  # 2. The above lines sum over all possible Db values#
+  # Output the results#
+  prob.inf.given.D0#
+}#
+#### THIS FUNCTION CALCULATES THE NEG LOG LIKELIHOOD OF A FULL NON-IP DATA SET#
+####    *Follow equation 0.12#
+####    *Output the neg log transformed likelihood#
+nll.pt = function(pars, outcome.vec, D0.vec, p1){#
+  pt = ifelse(pars[1] >=0, pars[1], 0) #Make sure pt > 0#
+  pt = ifelse(pt > 1, 1, pt) #If pt > 1, reset to 1#
+  p_i = numeric(length(D0.vec)) #Get the probability of infection (success) given D0#
+  #note: P(failure, or no infection) = 1-p(success)#
+  for(ii in 1:length(D0.vec)){#
+    p_i[ii] = Prob.inf.given.dose(D0.vec[ii], pt, p1)#
+  }#
+  #Now sum the log probabilities for each observed outcome: 0 or 1#
+  aa = ifelse(outcome.vec == 1, p_i, 1-p_i)#
+  if(any(aa < 0)){stop('probability less than zero. See line 145.')}#
+  #if(any(aa < 0 & -.0000001 < aa)){aa[which(-.0000001 < aa & aa < 0)] = -aa[which(-.0000001 < aa & aa < 0)] }#get rid of machine negatives#
+  #-log(prod(aa))#
+  -sum(log(aa))#
+}#
+#####################################################################
+####   Maximize the likelihood to estimate pt for each site of inoculation#
+#####################################################################
+opt.pt.abraded.skin = optim(c(pt = .00005), fn = nll.pt, p1 = p1, method = 'Brent', upper = 1, lower = 0, outcome.vec = Outcomes.abraded, D0.vec = Doses.abraded)#
+opt.pt.abraded.skin#
+#
+opt.pt.intact.skin = optim(c(pt = 1e-8), fn = nll.pt, p1 = p1,  outcome.vec = Outcomes.intact, D0.vec = Doses.intact)#
+opt.pt.intact.skin#
+opt.pt.shaved.skin = optim(c(pt = .00005), fn = nll.pt, p1 = p1, outcome.vec = Outcomes.shaved, D0.vec = Doses.shaved)#
+opt.pt.shaved.skin#
+#
+## Note on these warnings to use 'Brent':#
+##   Optimization using Brent gave bad answers, with negative log likelihoods far higher than the optimums returned using 'Brent'. Profiles below verify that we are getting the correct minima with Brent.#
+#
+opt.pt.conjunctival.skin = optim(c(pt = .00005), fn = nll.pt, p1 = p1, method = 'Brent', upper = 1, lower = 0, outcome.vec = Outcomes.conjunctival, D0.vec = Doses.conjunctival)#
+opt.pt.conjunctival.skin#
+#
+################### Repeat for rat data, abraded ###############################
+opt.pt.abraded.skin.rat = optim(c(pt = .00005), fn = nll.pt, p1 = p1.rat, method = 'Brent', upper = 1, lower = 0, outcome.vec = Outcomes.abraded.rat, D0.vec = Doses.abraded.rat)#
+opt.pt.abraded.skin.rat#
+#####################################################################
+####   Calculate 1D likelihood surfaces, hamsters#
+#####################################################################
+## Intact skin#
+#
+## Note: Commented code below calculates profiles. I've commented it out here, and am loading a saved version, because it takes a few minutes to run.#
+#
+pt.is = c(seq(1e-9, 2e-7, by = 1e-9), seq(1e-7, 1-.0001, by = .0001))## Define a sequence of pt values across which to calculate the grid of likelihood values#
+# clusterExport(cl = cl, varlist = c('Outcomes.intact', 'Doses.intact', 'p1', 'nll.pt', 'pt.is', 'Prob.inf.given.dose'))#
+# wrapper = function(pt.in){nll.pt(pars = c(pt = pt.in), outcome.vec = Outcomes.intact, D0.vec = Doses.intact, p1 = p1)}#
+# prof.intact = parSapply(cl = cl, X = pt.is, FUN = wrapper)#
+# save(prof.intact, pt.is, file = 'prof_intact.RData')#
+load('prof_intact.RData')#
+plot(pt.is, prof.intact) # Preview likelihood profile#
+## Plot results#
+neighborhood = max(0, which.min(prof.intact)-100):min(length(pt.is), which.min(prof.intact)+150) # Get values within range of the best value#
+pdf(plot2)#
+par(mfrow = c(1,1))#
+plot(pt.is[neighborhood], prof.intact[neighborhood], main = 'Profile, pT(intact) hamsters', xlab = 'pT', ylab = 'Neg log Likelihood', type = 'l')#
+threshold.intact = LR.Threshold(NLL_best = opt.pt.intact.skin$value, df = 1)#
+CI.intact = LR.CI(threshold.intact, prof.intact, pt.is)#
+# Calculate profile CIs using method based on the likelihood ratio of profile likelihood and best likelihood#
+# See Bolker, Ecological Models and Data in R, 2008 Ch. 6#
+# pdf at https://ms.mcmaster.ca/~bolker/emdbook/book.pdf#
+# extract the best pt value from MLE#
+pt.opt.intact = pt.is[which.min(prof.intact)]; pt.opt.intact#
+text(6e-8, 15, sprintf('Best est = %.3g\nCI = %.3g - %.3g', pt.opt.intact, CI.intact[1], CI.intact[2]))#
+points(opt.pt.intact.skin$par, opt.pt.intact.skin$value, pch = 8, col = 'blue', cex = 1.2)#
+#points(full.model$par[3], opt.pt.intact.skin$value, pch = 16, col = 'green3', cex = .8)#
+abline(v = opt.pt.intact.skin$par, lty = 2)#
+abline(h = threshold.intact, col = 'red')#
+dev.off()#
+# Repeat for abraded skin, basic model#
+# pt.abraded = seq(0, 1, by = 0.0001)#
+# clusterExport(cl = cl, varlist = c('Outcomes.abraded', 'Doses.abraded', 'p1', 'nll.pt', 'pt.abraded', 'Prob.inf.given.dose'))#
+# wrapper = function(pt.in){nll.pt(pars = c(pt = pt.in), outcome.vec = Outcomes.abraded, D0.vec = Doses.abraded, p1 = p1)}#
+# prof.abraded = parSapply(cl = cl, X = pt.abraded, FUN = wrapper)#
+# save(pt.abraded, prof.abraded, file = 'prof_abraded.RData')#
+load('prof_abraded.RData')#
+plot(pt.abraded, prof.abraded) # Preview likelihood profile#
+## Plot#
+neighborhood = max(0, which.min(prof.abraded)-1000):min(length(pt.abraded), which.min(prof.abraded)+1000)#
+pt.opt.abraded = opt.pt.abraded.skin$par#
+pdf(plot3)#
+plot(pt.abraded[neighborhood], prof.abraded[neighborhood], main = 'Profile, pT(abraded) hamsters', xlab = 'pT', ylab = 'Neg log Likelihood', type = 'l')#
+threshold.abraded = LR.Threshold(opt.pt.abraded.skin$value,1)#
+abline(h = threshold.abraded, col = 'red')#
+CI.abraded = LR.CI(threshold.abraded, prof.abraded, pt.abraded)#
+text(.055, 80, sprintf('Best est = %.2g\nCI = %.2g - %.2g', pt.opt.abraded, CI.abraded[1], CI.abraded[2]))#
+points(opt.pt.abraded.skin$par, opt.pt.abraded.skin$value, pch = 8, col = 'blue', cex = 1.2)#
+#points(full.model$par[2], opt.pt.abraded.skin$value, pch = 16, col = 'green3', cex = .8)#
+abline(v = opt.pt.abraded.skin$par, lty = 2)#
+dev.off()#
+# Shaved#
+# pt.shaved = c(seq(0, 10^-6, by = 10^-10), seq(10^-6, 1, .001))#
+# clusterExport(cl = cl, varlist = c('Outcomes.shaved', 'Doses.shaved', 'p1', 'nll.pt', 'pt.shaved', 'Prob.inf.given.dose'))#
+# wrapper = function(pt.in){nll.pt(pars = c(pt = pt.in), outcome.vec = Outcomes.shaved, D0.vec = Doses.shaved, p1 = p1)}#
+# prof.shaved = parSapply(cl = cl, X = pt.shaved, FUN = wrapper)#
+# save(pt.shaved, prof.shaved, file = 'prof_shaved.RData')#
+load('prof_shaved.RData')#
+## Plot#
+neighborhood = max(0, which.min(prof.shaved)-2500):min(length(pt.shaved), which.min(prof.shaved)+5000)#
+threshold = LR.Threshold(opt.pt.shaved.skin$value,1)#
+CI.shaved = LR.CI(threshold, prof.shaved, pt.shaved)#
+pt.opt.shaved = opt.pt.shaved.skin$par#
+pdf(plot4)#
+plot(pt.shaved[neighborhood], prof.shaved[neighborhood], main = 'Profile, pT(shaved), hamsters', xlab = 'pT', ylab = 'Neg log Likelihood', type = 'l')#
+abline(h = threshold, col = 'red')#
+CI.shaved = LR.CI(threshold, prof.shaved, pt.shaved)#
+text(3.5e-7, 60, sprintf('Best est = %.3g\nCI = %.3g - %.3g', pt.opt.shaved, CI.shaved[1], CI.shaved[2]))#
+points(opt.pt.shaved.skin$par, opt.pt.shaved.skin$value, pch = 8, col = 'blue')#
+abline(v = opt.pt.shaved.skin$par, lty = 2)#
+dev.off()#
+# Conjunctival#
+# pt.con = c(seq(0, 5e-5, by = 1e-7), seq(5e-5, 1, by = 1e-3))#
+# clusterExport(cl = cl, varlist = c('Outcomes.conjunctival', 'Doses.conjunctival', 'p1', 'nll.pt', 'pt.con', 'Prob.inf.given.dose'))#
+# wrapper = function(pt.in){nll.pt(pars = c(pt = pt.in), outcome.vec = Outcomes.conjunctival, D0.vec = Doses.conjunctival, p1 = p1)}#
+# prof.conjunctival = parSapply(cl = cl, X = pt.con, FUN = wrapper)#
+# save(pt.con, prof.conjunctival, file = 'prof_conjunctival.RData')#
+load('prof_conjunctival.RData')#
+plot(pt.con, prof.conjunctival)#
+## Plot#
+pt.opt.conjunctival = opt.pt.conjunctival.skin$par#
+neighborhood = max(0, which.min(prof.conjunctival)-70):min(length(pt.con), which.min(prof.conjunctival)+70)#
+threshold = LR.Threshold(opt.pt.conjunctival.skin$value,1)#
+CI.conjunctival = LR.CI(threshold, prof.conjunctival, pt.con)#
+pdf(plot5)#
+plot(pt.con[neighborhood], prof.conjunctival[neighborhood], main = 'Profile, pT(conjunctival), hamsters', xlab = 'pT', ylab = 'Neg log Likelihood', type = 'l')#
+abline(h = threshold, col = 'red')#
+CI.conjunctival = LR.CI(threshold, prof.conjunctival, pt.con)#
+text(4e-6, 100, sprintf('Best est = %.3g\nCI = %.3g - %.3g', pt.opt.conjunctival, CI.conjunctival[1], CI.conjunctival[2]))#
+points(opt.pt.conjunctival.skin$par, opt.pt.conjunctival.skin$value, pch = 8, col = 'blue')#
+abline(v = opt.pt.conjunctival.skin$par, lty = 2)#
+dev.off()#
+#####################################################################
+####   Repeat for abraded data, rats#
+#####################################################################
+# Repeat for abraded skin, basic model, rats#
+# pt.abraded.rat = seq(0, 1, by = 0.0001)#
+# clusterExport(cl = cl, varlist = c('Outcomes.abraded.rat', 'Doses.abraded.rat', 'p1.rat', 'nll.pt', 'pt.abraded.rat', 'Prob.inf.given.dose'))#
+# wrapper = function(pt.in){nll.pt(pars = c(pt = pt.in), outcome.vec = Outcomes.abraded.rat, D0.vec = Doses.abraded.rat, p1 = p1.rat)}#
+# prof.abraded.rat = parSapply(cl = cl, X = pt.abraded.rat, FUN = wrapper)#
+# save(pt.abraded.rat, prof.abraded.rat, file = 'prof_abraded_rat.RData')#
+load('prof_abraded_rat.RData')#
+plot(pt.abraded.rat, prof.abraded.rat) # Preview likelihood profile#
+## Plot#
+neighborhood = max(0, which.min(prof.abraded.rat)-1000):min(length(pt.abraded.rat), which.min(prof.abraded.rat)+1000)#
+pt.opt.abraded.rat = opt.pt.abraded.skin.rat$par#
+pdf('profile_pT_rat.pdf')#
+plot(pt.abraded.rat[neighborhood], prof.abraded.rat[neighborhood], main = 'Profile, pT(abraded) rats', xlab = 'pT', ylab = 'Neg log Likelihood', type = 'l')#
+threshold.abraded.rat = LR.Threshold(opt.pt.abraded.skin.rat$value,1)#
+abline(h = threshold.abraded.rat, col = 'red')#
+CI.abraded.rat = LR.CI(threshold.abraded.rat, prof.abraded.rat, pt.abraded.rat)#
+text(.055, 20, sprintf('Best est = %.2g\nCI = %.2g - %.2g', pt.opt.abraded.rat, CI.abraded.rat[1], CI.abraded.rat[2]))#
+points(opt.pt.abraded.skin.rat$par, opt.pt.abraded.skin.rat$value, pch = 8, col = 'blue', cex = 1.2)#
+#points(full.model$par[2], opt.pt.abraded.skin$value, pch = 16, col = 'green3', cex = .8)#
+abline(v = opt.pt.abraded.skin.rat$par, lty = 2)#
+dev.off()#
+#####################################################################
+###########################   SECTION 3   ###########################
+####   #
+####   3. Repeat fits to abraded data using the mixture model.#
+####      #
+#####################################################################
+#####################################################################
+#
+#### THIS FUNCTION CALCULATES THE PROBABILITY OF OBSERVING ANY PARTICULAR BINARY INFECTION OUTCOME IN THE MIXTURE MODEL #
+####    *This probability is defined in equation 5 of the methods#
+####    *These probabilities will be used to calculate the overall likelihood of the data.#
+####    *Note, for D0 larger than 100, we truncate the range of summation to exclude values with #
+####     negligible probability density. Do this because it is computationally intractable to calculate #
+####     the exact binomial sum. Code runs too long and you use too much memory otherwise. This #
+####     approximation is highly accurate for large sample sizes.#
+#
+Prob.inf.given.dose.mixture = function(D0, alpha, beta, p1){#
+  # Can't approximate in the mixture model, because the distribution is overdispersed, and 3*sd spans the entire plausible range of DT values, from 0 to D0#
+  # Instead, to speed up code, run everything in parallel#
+  if(D0<=10^6){#
+    DT = 1:D0 # Get a vector of all plausible DT values, given D0, pt, p1#
+  prob.inf.given.D0 = sum( ( 1-((1-p1)^DT) )*TailRank::dbb(x=DT, N=D0, u = alpha, v = beta, log = FALSE))#pt to be#
+  }else{ # If D0 is very large, run sums in parallel#
+    clusterExport(cl = cl, varlist = c('p1', 'DT', 'D0', 'alpha', 'beta', 'p1'))#
+    breaks = round(seq(0, (D0), length = 11))#
+    chunkmat = cbind(breaks[1:10]+1, breaks[2:11]) # Define the upper and lower limits of smaller chunks of possible DT values#
+    wr = function(brvec){ # Wrapper that takes a vector of limits and finds the partial sum of DT values falling in those indices#
+      DT = brvec[1]:brvec[2] # Set DT to take the values just in this smaller chunk#
+      sum( ( 1-((1-p1)^DT) )*TailRank::dbb(x=DT, N=D0, u = alpha, v = beta, log = FALSE)) # Sum across relevant DT values#
+    }#
+    prob.inf.given.D0 = sum(parApply(cl, X = chunkmat, MARGIN = 1, FUN = wr)) # Sum across contribution from all chunks#
+  }#
+  # 2. The above lines sum over all possible Db values#
+  # Output the results#
+  #if(prob.inf.given.D0<0|prob.inf.given.D0>1){stop('Prob.Inf.given.dose.mixture retuning prob outside [0,1]')}#
+  prob.inf.given.D0#
+}#
+# ## Test time for 10^8 dose#
+# aa = Sys.time()#
+# Prob.inf.given.dose.mixture(D0 = 10^8, alpha = .2, beta = .4, p1 = .18)#
+# Sys.time()-aa#
+## Note: To proove that that truncated sum above is a good approximation, do the following test#
+##         1. Source the function as defined above, and then run these three tests. Save the output values (approximate values)#
+##         2. Change the min.search value to 1, and the max.search value to D0 in the function definition. Re-source and re-run the tests to get the exact answers. (this will take longer to run, esp. for 10^8 dose)#
+##         3. Confirm that approximate outputs are equal to the exact outputs to at least 2 decimal places#
+# ## Test#
+# Prob.inf.given.dose.mixture(D0 = 10^6, alpha = 1.01, beta = 6, p1 = .18)#
+# Prob.inf.given.dose.mixture(D0 = 10^8, alpha = .02, beta = 6, p1 = .18)#
+# Prob.inf.given.dose.mixture(D0 = 10^6, alpha = 1.01, beta = 6, p1 = .02)#
+#
+#### THIS FUNCTION CALCULATES THE NEG LOG LIKELIHOOD OF A FULL NON-IP DATA SET#
+####    *Follow equation 0.12#
+####    *Output the neg log transformed likelihood#
+nll.aa.BB = function(pars, outcome.vec, D0.vec, p1){#
+  alpha = pars['aa']#
+  Beta = pars['BB']#
+  p_i = numeric(length(D0.vec)) #Get the probability of infection (success) given D0#
+  #note: P(failure, or no infection) = 1-p(success)#
+  for(ii in 1:length(D0.vec)){#
+    p_i[ii] = Prob.inf.given.dose.mixture(D0.vec[ii], alpha, Beta, p1)#
+  }#
+  # Extract the contribution of each infection trial to the likelihood#
+  # Include the probability of infection in the product if the outcome was infection#
+  # And 1-p_i if the outcome was not infection#
+  lk.vec = ifelse(outcome.vec == 1, p_i, 1-p_i)#
+  -sum(log(lk.vec)) # Output negative log likelihood#
+}#
+#####################################################################
+####   Maximize the likelihood to estimate pt for abraded data, hamsters#
+#####################################################################
+xx = seq(0, 1, by = .01) ## Set a vector of x values spanning 0 to 1 for plotting (below)#
+#
+## Fit to abraded data:#
+opt.aa.BB.abraded.skin = optim(c(aa = .3, BB = 6), fn = nll.aa.BB, p1 = p1, outcome.vec = Outcomes.abraded, D0.vec = Doses.abraded, method = 'L-BFGS-B', lower = c(1e-6, 1e-6), upper = c(Inf,Inf))#
+opt.aa.BB.abraded.skin#
+#
+# Plot the estimated pT distribution using the ML values of alpha and beta#
+plot(xx, dbeta(x = xx, shape1 = opt.aa.BB.abraded.skin$par[1], shape2 = opt.aa.BB.abraded.skin$par[2]), main = 'pT distribution from mixture model', xlab = 'pT', ylab = 'probability density')#
+#####################################################################
+####   Calculate 1D likelihood profiles (Mixture model), hamsters#
+#####################################################################
+## Define functions that constrains one parameter at a time, aa or BB:#
+nll.aa.prof = function(pars, fixed.alpha, outcome.vec, D0.vec, p1){#
+  alpha = fixed.alpha#
+  Beta = pars['BB']#
+  p_i = numeric(length(D0.vec)) #Get the probability of infection (success) given D0#
+  #note: P(failure, or no infection) = 1-p(success)#
+  for(ii in 1:length(D0.vec)){#
+    p_i[ii] = Prob.inf.given.dose.mixture(D0.vec[ii], alpha, Beta, p1)#
+  }#
+  lk.vec = ifelse(outcome.vec == 1, p_i, 1-p_i)#
+  -sum(log(lk.vec)) # Output negative log likelihood#
+}#
+nll.BB.prof = function(pars, fixed.beta, outcome.vec, D0.vec, p1){#
+  Beta = fixed.beta#
+  alpha = pars['aa']#
+  p_i = numeric(length(D0.vec)) #Get the probability of infection (success) given D0#
+  #note: P(failure, or no infection) = 1-p(success)#
+  for(ii in 1:length(D0.vec)){#
+    p_i[ii] = Prob.inf.given.dose.mixture(D0.vec[ii], alpha, Beta, p1)#
+  }#
+  lk.vec = ifelse(outcome.vec == 1, p_i, 1-p_i)#
+  -sum(log(lk.vec)) # Output negative log likelihood#
+}#
+#
+# ## Find likelihood profiles for alpha and beta#
+# aas = c(seq(0.001, 1, by = 0.001), seq(1.01, 6, by = 0.01))#
+# BBs = c(seq(0.001, 1, by = 0.001), seq(1.01, 10, by = 0.01))#
+# #
+#
+# # Calculte alpha profile:#
+# # Define a profile wrapper that takes only the fixed alpha input#
+# wrapper.aa.prof = function(aa.in){#
+#   optim(c(BB = 6), fn = nll.aa.prof, fixed.alpha = aa.in, p1 = p1, outcome.vec = Outcomes.abraded, D0.vec = Doses.abraded, method = 'L-BFGS-B', upper = Inf, lower = 1e-10)$value#
+#   }#
+# cl = makeCluster(detectCores()-1)#
+# clusterExport(cl = cl, varlist = ls())#
+# aa.prof = parSapply(cl = cl, X = aas, FUN = wrapper.aa.prof)#
+# stopCluster(cl)#
+# #
+# #
+# # Calculte beta profile:#
+# # Define a profile wrapper that takes only the fixed alpha input#
+# wrapper.bb.prof = function(BB.in){#
+#   optim(c(aa = .6), fn = nll.BB.prof, fixed.beta = BB.in, p1 = p1, method = 'L-BFGS-B', upper = Inf, lower = 1e-10, outcome.vec = Outcomes.abraded, D0.vec = Doses.abraded)$value}#
+# cl = makeCluster(detectCores()-1)#
+# clusterExport(cl = cl, varlist = ls())#
+# bb.prof = parSapply(cl = cl, X = BBs, FUN = wrapper.bb.prof)#
+# stopCluster(cl)#
+# save(aas, BBs, aa.prof, bb.prof, file = 'prof_mixtureModel.RData')#
+load('prof_mixtureModel.RData')#
+#
+## preview profiles#
+plot(aas, aa.prof)#
+plot(BBs, bb.prof)#
+#
+## Plot#
+pdf(plot6)#
+par(mfrow = c(1,2))#
+## Plot aa profile#
+aa.best = opt.aa.BB.abraded.skin$par['aa']#
+neighborhood = max(0, which.min(aa.prof)-300):min(length(aas), which.min(aa.prof)+700)#
+threshold = LR.Threshold(opt.aa.BB.abraded.skin$value,1)#
+CI.aa = LR.CI(threshold, aa.prof, aas)#
+plot(aas[neighborhood], aa.prof[neighborhood], main = 'Alpha profile, hamsters mixture model', xlab = 'alpha', ylab = 'Neg log Likelihood', type = 'l')#
+abline(h = threshold, col = 'red')#
+text(3.5e-7, 60, sprintf('Best est = %.3g\nCI = %.3g - %.3g', opt.aa.BB.abraded.skin$par['aa'], CI.aa[1], CI.aa[2]))#
+points(opt.aa.BB.abraded.skin$par['aa'], opt.aa.BB.abraded.skin$value, pch = 8, col = 'blue')#
+abline(v = opt.aa.BB.abraded.skin$par['aa'], lty = 2)#
+## Plot bb profile#
+bb.best = opt.aa.BB.abraded.skin$par['bb']#
+neighborhood = max(0, which.min(bb.prof)-500):min(length(BBs), which.min(bb.prof)+1300)#
+threshold = LR.Threshold(opt.aa.BB.abraded.skin$value,1)#
+CI.bb = LR.CI(threshold, bb.prof, BBs)#
+plot(BBs[neighborhood], bb.prof[neighborhood], main = 'Beta profile, hamsters mixture model', xlab = 'beta', ylab = 'Neg log Likelihood', type = 'l')#
+abline(h = threshold, col = 'red')#
+text(3.5e-7, 60, sprintf('Best est = %.3g\nCI = %.3g - %.3g', opt.aa.BB.abraded.skin$par['BB'], CI.bb[1], CI.bb[2]))#
+points(opt.aa.BB.abraded.skin$par['BB'], opt.aa.BB.abraded.skin$value, pch = 8, col = 'blue')#
+abline(v = opt.aa.BB.abraded.skin$par['BB'], lty = 2)#
+dev.off()#
+# #####################################################################
+# ####   Repeat for rat data#
+# #####################################################################
+## Fit to abraded data:#
+opt.aa.BB.abraded.skin.rat = optim(c(aa = .3, BB = 6), fn = nll.aa.BB, p1 = p1.rat, outcome.vec = Outcomes.abraded.rat, D0.vec = Doses.abraded.rat, method = 'L-BFGS-B', lower = c(1e-6, 1e-6), upper = c(Inf,Inf))#
+opt.aa.BB.abraded.skin.rat#
+#
+# Plot the estimated pT distribution using the ML values of alpha and beta#
+plot(xx, dbeta(x = xx, shape1 = opt.aa.BB.abraded.skin.rat$par[1], shape2 = opt.aa.BB.abraded.skin.rat$par[2]), main = 'pT distribution from mixture model, rats', xlab = 'pT', ylab = 'probability density')
+Prob.inf.given.dose.mixture = function(D0, alpha, beta, p1){#
+  # Can't approximate in the mixture model, because the distribution is overdispersed, and 3*sd spans the entire plausible range of DT values, from 0 to D0#
+  # Instead, to speed up code, run everything in parallel#
+  if(D0<=10^6){#
+    DT = 1:D0 # Get a vector of all plausible DT values, given D0, pt, p1#
+  prob.inf.given.D0 = sum( ( 1-((1-p1)^DT) )*TailRank::dbb(x=DT, N=D0, u = alpha, v = beta, log = FALSE))#pt to be#
+  }else{ # If D0 is very large, run sums in parallel#
+    clusterExport(cl = cl, varlist = c('p1', 'D0', 'alpha', 'beta', 'p1'))#
+    breaks = round(seq(0, (D0), length = 11))#
+    chunkmat = cbind(breaks[1:10]+1, breaks[2:11]) # Define the upper and lower limits of smaller chunks of possible DT values#
+    wr = function(brvec){ # Wrapper that takes a vector of limits and finds the partial sum of DT values falling in those indices#
+      DT = brvec[1]:brvec[2] # Set DT to take the values just in this smaller chunk#
+      sum( ( 1-((1-p1)^DT) )*TailRank::dbb(x=DT, N=D0, u = alpha, v = beta, log = FALSE)) # Sum across relevant DT values#
+    }#
+    prob.inf.given.D0 = sum(parApply(cl, X = chunkmat, MARGIN = 1, FUN = wr)) # Sum across contribution from all chunks#
+  }#
+  # 2. The above lines sum over all possible Db values#
+  # Output the results#
+  #if(prob.inf.given.D0<0|prob.inf.given.D0>1){stop('Prob.Inf.given.dose.mixture retuning prob outside [0,1]')}#
+  prob.inf.given.D0#
+}#
+# ## Test time for 10^8 dose#
+# aa = Sys.time()#
+# Prob.inf.given.dose.mixture(D0 = 10^8, alpha = .2, beta = .4, p1 = .18)#
+# Sys.time()-aa#
+## Note: To proove that that truncated sum above is a good approximation, do the following test#
+##         1. Source the function as defined above, and then run these three tests. Save the output values (approximate values)#
+##         2. Change the min.search value to 1, and the max.search value to D0 in the function definition. Re-source and re-run the tests to get the exact answers. (this will take longer to run, esp. for 10^8 dose)#
+##         3. Confirm that approximate outputs are equal to the exact outputs to at least 2 decimal places#
+# ## Test#
+# Prob.inf.given.dose.mixture(D0 = 10^6, alpha = 1.01, beta = 6, p1 = .18)#
+# Prob.inf.given.dose.mixture(D0 = 10^8, alpha = .02, beta = 6, p1 = .18)#
+# Prob.inf.given.dose.mixture(D0 = 10^6, alpha = 1.01, beta = 6, p1 = .02)#
+#
+#### THIS FUNCTION CALCULATES THE NEG LOG LIKELIHOOD OF A FULL NON-IP DATA SET#
+####    *Follow equation 0.12#
+####    *Output the neg log transformed likelihood#
+nll.aa.BB = function(pars, outcome.vec, D0.vec, p1){#
+  alpha = pars['aa']#
+  Beta = pars['BB']#
+  p_i = numeric(length(D0.vec)) #Get the probability of infection (success) given D0#
+  #note: P(failure, or no infection) = 1-p(success)#
+  for(ii in 1:length(D0.vec)){#
+    p_i[ii] = Prob.inf.given.dose.mixture(D0.vec[ii], alpha, Beta, p1)#
+  }#
+  # Extract the contribution of each infection trial to the likelihood#
+  # Include the probability of infection in the product if the outcome was infection#
+  # And 1-p_i if the outcome was not infection#
+  lk.vec = ifelse(outcome.vec == 1, p_i, 1-p_i)#
+  -sum(log(lk.vec)) # Output negative log likelihood#
+}#
+#####################################################################
+####   Maximize the likelihood to estimate pt for abraded data, hamsters#
+#####################################################################
+xx = seq(0, 1, by = .01) ## Set a vector of x values spanning 0 to 1 for plotting (below)#
+#
+## Fit to abraded data:#
+opt.aa.BB.abraded.skin = optim(c(aa = .3, BB = 6), fn = nll.aa.BB, p1 = p1, outcome.vec = Outcomes.abraded, D0.vec = Doses.abraded, method = 'L-BFGS-B', lower = c(1e-6, 1e-6), upper = c(Inf,Inf))#
+opt.aa.BB.abraded.skin#
+#
+# Plot the estimated pT distribution using the ML values of alpha and beta#
+plot(xx, dbeta(x = xx, shape1 = opt.aa.BB.abraded.skin$par[1], shape2 = opt.aa.BB.abraded.skin$par[2]), main = 'pT distribution from mixture model', xlab = 'pT', ylab = 'probability density')#
+#####################################################################
+####   Calculate 1D likelihood profiles (Mixture model), hamsters#
+#####################################################################
+## Define functions that constrains one parameter at a time, aa or BB:#
+nll.aa.prof = function(pars, fixed.alpha, outcome.vec, D0.vec, p1){#
+  alpha = fixed.alpha#
+  Beta = pars['BB']#
+  p_i = numeric(length(D0.vec)) #Get the probability of infection (success) given D0#
+  #note: P(failure, or no infection) = 1-p(success)#
+  for(ii in 1:length(D0.vec)){#
+    p_i[ii] = Prob.inf.given.dose.mixture(D0.vec[ii], alpha, Beta, p1)#
+  }#
+  lk.vec = ifelse(outcome.vec == 1, p_i, 1-p_i)#
+  -sum(log(lk.vec)) # Output negative log likelihood#
+}#
+nll.BB.prof = function(pars, fixed.beta, outcome.vec, D0.vec, p1){#
+  Beta = fixed.beta#
+  alpha = pars['aa']#
+  p_i = numeric(length(D0.vec)) #Get the probability of infection (success) given D0#
+  #note: P(failure, or no infection) = 1-p(success)#
+  for(ii in 1:length(D0.vec)){#
+    p_i[ii] = Prob.inf.given.dose.mixture(D0.vec[ii], alpha, Beta, p1)#
+  }#
+  lk.vec = ifelse(outcome.vec == 1, p_i, 1-p_i)#
+  -sum(log(lk.vec)) # Output negative log likelihood#
+}#
+#
+# ## Find likelihood profiles for alpha and beta#
+# aas = c(seq(0.001, 1, by = 0.001), seq(1.01, 6, by = 0.01))#
+# BBs = c(seq(0.001, 1, by = 0.001), seq(1.01, 10, by = 0.01))#
+# #
+#
+# # Calculte alpha profile:#
+# # Define a profile wrapper that takes only the fixed alpha input#
+# wrapper.aa.prof = function(aa.in){#
+#   optim(c(BB = 6), fn = nll.aa.prof, fixed.alpha = aa.in, p1 = p1, outcome.vec = Outcomes.abraded, D0.vec = Doses.abraded, method = 'L-BFGS-B', upper = Inf, lower = 1e-10)$value#
+#   }#
+# cl = makeCluster(detectCores()-1)#
+# clusterExport(cl = cl, varlist = ls())#
+# aa.prof = parSapply(cl = cl, X = aas, FUN = wrapper.aa.prof)#
+# stopCluster(cl)#
+# #
+# #
+# # Calculte beta profile:#
+# # Define a profile wrapper that takes only the fixed alpha input#
+# wrapper.bb.prof = function(BB.in){#
+#   optim(c(aa = .6), fn = nll.BB.prof, fixed.beta = BB.in, p1 = p1, method = 'L-BFGS-B', upper = Inf, lower = 1e-10, outcome.vec = Outcomes.abraded, D0.vec = Doses.abraded)$value}#
+# cl = makeCluster(detectCores()-1)#
+# clusterExport(cl = cl, varlist = ls())#
+# bb.prof = parSapply(cl = cl, X = BBs, FUN = wrapper.bb.prof)#
+# stopCluster(cl)#
+# save(aas, BBs, aa.prof, bb.prof, file = 'prof_mixtureModel.RData')#
+load('prof_mixtureModel.RData')#
+#
+## preview profiles#
+plot(aas, aa.prof)#
+plot(BBs, bb.prof)#
+#
+## Plot#
+pdf(plot6)#
+par(mfrow = c(1,2))#
+## Plot aa profile#
+aa.best = opt.aa.BB.abraded.skin$par['aa']#
+neighborhood = max(0, which.min(aa.prof)-300):min(length(aas), which.min(aa.prof)+700)#
+threshold = LR.Threshold(opt.aa.BB.abraded.skin$value,1)#
+CI.aa = LR.CI(threshold, aa.prof, aas)#
+plot(aas[neighborhood], aa.prof[neighborhood], main = 'Alpha profile, hamsters mixture model', xlab = 'alpha', ylab = 'Neg log Likelihood', type = 'l')#
+abline(h = threshold, col = 'red')#
+text(3.5e-7, 60, sprintf('Best est = %.3g\nCI = %.3g - %.3g', opt.aa.BB.abraded.skin$par['aa'], CI.aa[1], CI.aa[2]))#
+points(opt.aa.BB.abraded.skin$par['aa'], opt.aa.BB.abraded.skin$value, pch = 8, col = 'blue')#
+abline(v = opt.aa.BB.abraded.skin$par['aa'], lty = 2)#
+## Plot bb profile#
+bb.best = opt.aa.BB.abraded.skin$par['bb']#
+neighborhood = max(0, which.min(bb.prof)-500):min(length(BBs), which.min(bb.prof)+1300)#
+threshold = LR.Threshold(opt.aa.BB.abraded.skin$value,1)#
+CI.bb = LR.CI(threshold, bb.prof, BBs)#
+plot(BBs[neighborhood], bb.prof[neighborhood], main = 'Beta profile, hamsters mixture model', xlab = 'beta', ylab = 'Neg log Likelihood', type = 'l')#
+abline(h = threshold, col = 'red')#
+text(3.5e-7, 60, sprintf('Best est = %.3g\nCI = %.3g - %.3g', opt.aa.BB.abraded.skin$par['BB'], CI.bb[1], CI.bb[2]))#
+points(opt.aa.BB.abraded.skin$par['BB'], opt.aa.BB.abraded.skin$value, pch = 8, col = 'blue')#
+abline(v = opt.aa.BB.abraded.skin$par['BB'], lty = 2)#
+dev.off()#
+# #####################################################################
+# ####   Repeat for rat data#
+# #####################################################################
+## Fit to abraded data:#
+opt.aa.BB.abraded.skin.rat = optim(c(aa = .3, BB = 6), fn = nll.aa.BB, p1 = p1.rat, outcome.vec = Outcomes.abraded.rat, D0.vec = Doses.abraded.rat, method = 'L-BFGS-B', lower = c(1e-6, 1e-6), upper = c(Inf,Inf))#
+opt.aa.BB.abraded.skin.rat#
+#
+# Plot the estimated pT distribution using the ML values of alpha and beta#
+plot(xx, dbeta(x = xx, shape1 = opt.aa.BB.abraded.skin.rat$par[1], shape2 = opt.aa.BB.abraded.skin.rat$par[2]), main = 'pT distribution from mixture model, rats', xlab = 'pT', ylab = 'probability density')
+#### THIS FUNCTION CALCULATES THE PROBABILITY OF OBSERVING ANY PARTICULAR BINARY INFECTION OUTCOME IN THE MIXTURE MODEL #
+####    *This probability is defined in equation 5 of the methods#
+####    *These probabilities will be used to calculate the overall likelihood of the data.#
+####    *Note, for D0 larger than 100, we truncate the range of summation to exclude values with #
+####     negligible probability density. Do this because it is computationally intractable to calculate #
+####     the exact binomial sum. Code runs too long and you use too much memory otherwise. This #
+####     approximation is highly accurate for large sample sizes.#
+#
+Prob.inf.given.dose.mixture = function(D0, alpha, beta, p1){#
+  # Can't approximate in the mixture model, because the distribution is overdispersed, and 3*sd spans the entire plausible range of DT values, from 0 to D0#
+  # Instead, to speed up code, run everything in parallel#
+  if(D0<=10^6){#
+    DT = 1:D0 # Get a vector of all plausible DT values, given D0, pt, p1#
+  prob.inf.given.D0 = sum( ( 1-((1-p1)^DT) )*TailRank::dbb(x=DT, N=D0, u = alpha, v = beta, log = FALSE))#pt to be#
+  }else{ # If D0 is very large, run sums in parallel#
+    clusterExport(cl = cl, varlist = c('p1', 'D0', 'alpha', 'beta', 'p1'), envir = environment())#
+    breaks = round(seq(0, (D0), length = 11))#
+    chunkmat = cbind(breaks[1:10]+1, breaks[2:11]) # Define the upper and lower limits of smaller chunks of possible DT values#
+    wr = function(brvec){ # Wrapper that takes a vector of limits and finds the partial sum of DT values falling in those indices#
+      DT = brvec[1]:brvec[2] # Set DT to take the values just in this smaller chunk#
+      sum( ( 1-((1-p1)^DT) )*TailRank::dbb(x=DT, N=D0, u = alpha, v = beta, log = FALSE)) # Sum across relevant DT values#
+    }#
+    prob.inf.given.D0 = sum(parApply(cl, X = chunkmat, MARGIN = 1, FUN = wr)) # Sum across contribution from all chunks#
+  }#
+  # 2. The above lines sum over all possible Db values#
+  # Output the results#
+  #if(prob.inf.given.D0<0|prob.inf.given.D0>1){stop('Prob.Inf.given.dose.mixture retuning prob outside [0,1]')}#
+  prob.inf.given.D0#
+}#
+# ## Test time for 10^8 dose#
+# aa = Sys.time()#
+# Prob.inf.given.dose.mixture(D0 = 10^8, alpha = .2, beta = .4, p1 = .18)#
+# Sys.time()-aa#
+## Note: To proove that that truncated sum above is a good approximation, do the following test#
+##         1. Source the function as defined above, and then run these three tests. Save the output values (approximate values)#
+##         2. Change the min.search value to 1, and the max.search value to D0 in the function definition. Re-source and re-run the tests to get the exact answers. (this will take longer to run, esp. for 10^8 dose)#
+##         3. Confirm that approximate outputs are equal to the exact outputs to at least 2 decimal places#
+# ## Test#
+# Prob.inf.given.dose.mixture(D0 = 10^6, alpha = 1.01, beta = 6, p1 = .18)#
+# Prob.inf.given.dose.mixture(D0 = 10^8, alpha = .02, beta = 6, p1 = .18)#
+# Prob.inf.given.dose.mixture(D0 = 10^6, alpha = 1.01, beta = 6, p1 = .02)#
+#
+#### THIS FUNCTION CALCULATES THE NEG LOG LIKELIHOOD OF A FULL NON-IP DATA SET#
+####    *Follow equation 0.12#
+####    *Output the neg log transformed likelihood#
+nll.aa.BB = function(pars, outcome.vec, D0.vec, p1){#
+  alpha = pars['aa']#
+  Beta = pars['BB']#
+  p_i = numeric(length(D0.vec)) #Get the probability of infection (success) given D0#
+  #note: P(failure, or no infection) = 1-p(success)#
+  for(ii in 1:length(D0.vec)){#
+    p_i[ii] = Prob.inf.given.dose.mixture(D0.vec[ii], alpha, Beta, p1)#
+  }#
+  # Extract the contribution of each infection trial to the likelihood#
+  # Include the probability of infection in the product if the outcome was infection#
+  # And 1-p_i if the outcome was not infection#
+  lk.vec = ifelse(outcome.vec == 1, p_i, 1-p_i)#
+  -sum(log(lk.vec)) # Output negative log likelihood#
+}#
+#####################################################################
+####   Maximize the likelihood to estimate pt for abraded data, hamsters#
+#####################################################################
+xx = seq(0, 1, by = .01) ## Set a vector of x values spanning 0 to 1 for plotting (below)#
+#
+## Fit to abraded data:#
+opt.aa.BB.abraded.skin = optim(c(aa = .3, BB = 6), fn = nll.aa.BB, p1 = p1, outcome.vec = Outcomes.abraded, D0.vec = Doses.abraded, method = 'L-BFGS-B', lower = c(1e-6, 1e-6), upper = c(Inf,Inf))#
+opt.aa.BB.abraded.skin#
+#
+# Plot the estimated pT distribution using the ML values of alpha and beta#
+plot(xx, dbeta(x = xx, shape1 = opt.aa.BB.abraded.skin$par[1], shape2 = opt.aa.BB.abraded.skin$par[2]), main = 'pT distribution from mixture model', xlab = 'pT', ylab = 'probability density')#
+#####################################################################
+####   Calculate 1D likelihood profiles (Mixture model), hamsters#
+#####################################################################
+## Define functions that constrains one parameter at a time, aa or BB:#
+nll.aa.prof = function(pars, fixed.alpha, outcome.vec, D0.vec, p1){#
+  alpha = fixed.alpha#
+  Beta = pars['BB']#
+  p_i = numeric(length(D0.vec)) #Get the probability of infection (success) given D0#
+  #note: P(failure, or no infection) = 1-p(success)#
+  for(ii in 1:length(D0.vec)){#
+    p_i[ii] = Prob.inf.given.dose.mixture(D0.vec[ii], alpha, Beta, p1)#
+  }#
+  lk.vec = ifelse(outcome.vec == 1, p_i, 1-p_i)#
+  -sum(log(lk.vec)) # Output negative log likelihood#
+}#
+nll.BB.prof = function(pars, fixed.beta, outcome.vec, D0.vec, p1){#
+  Beta = fixed.beta#
+  alpha = pars['aa']#
+  p_i = numeric(length(D0.vec)) #Get the probability of infection (success) given D0#
+  #note: P(failure, or no infection) = 1-p(success)#
+  for(ii in 1:length(D0.vec)){#
+    p_i[ii] = Prob.inf.given.dose.mixture(D0.vec[ii], alpha, Beta, p1)#
+  }#
+  lk.vec = ifelse(outcome.vec == 1, p_i, 1-p_i)#
+  -sum(log(lk.vec)) # Output negative log likelihood#
+}#
+#
+# ## Find likelihood profiles for alpha and beta#
+# aas = c(seq(0.001, 1, by = 0.001), seq(1.01, 6, by = 0.01))#
+# BBs = c(seq(0.001, 1, by = 0.001), seq(1.01, 10, by = 0.01))#
+# #
+#
+# # Calculte alpha profile:#
+# # Define a profile wrapper that takes only the fixed alpha input#
+# wrapper.aa.prof = function(aa.in){#
+#   optim(c(BB = 6), fn = nll.aa.prof, fixed.alpha = aa.in, p1 = p1, outcome.vec = Outcomes.abraded, D0.vec = Doses.abraded, method = 'L-BFGS-B', upper = Inf, lower = 1e-10)$value#
+#   }#
+# cl = makeCluster(detectCores()-1)#
+# clusterExport(cl = cl, varlist = ls())#
+# aa.prof = parSapply(cl = cl, X = aas, FUN = wrapper.aa.prof)#
+# stopCluster(cl)#
+# #
+# #
+# # Calculte beta profile:#
+# # Define a profile wrapper that takes only the fixed alpha input#
+# wrapper.bb.prof = function(BB.in){#
+#   optim(c(aa = .6), fn = nll.BB.prof, fixed.beta = BB.in, p1 = p1, method = 'L-BFGS-B', upper = Inf, lower = 1e-10, outcome.vec = Outcomes.abraded, D0.vec = Doses.abraded)$value}#
+# cl = makeCluster(detectCores()-1)#
+# clusterExport(cl = cl, varlist = ls())#
+# bb.prof = parSapply(cl = cl, X = BBs, FUN = wrapper.bb.prof)#
+# stopCluster(cl)#
+# save(aas, BBs, aa.prof, bb.prof, file = 'prof_mixtureModel.RData')#
+load('prof_mixtureModel.RData')#
+#
+## preview profiles#
+plot(aas, aa.prof)#
+plot(BBs, bb.prof)#
+#
+## Plot#
+pdf(plot6)#
+par(mfrow = c(1,2))#
+## Plot aa profile#
+aa.best = opt.aa.BB.abraded.skin$par['aa']#
+neighborhood = max(0, which.min(aa.prof)-300):min(length(aas), which.min(aa.prof)+700)#
+threshold = LR.Threshold(opt.aa.BB.abraded.skin$value,1)#
+CI.aa = LR.CI(threshold, aa.prof, aas)#
+plot(aas[neighborhood], aa.prof[neighborhood], main = 'Alpha profile, hamsters mixture model', xlab = 'alpha', ylab = 'Neg log Likelihood', type = 'l')#
+abline(h = threshold, col = 'red')#
+text(3.5e-7, 60, sprintf('Best est = %.3g\nCI = %.3g - %.3g', opt.aa.BB.abraded.skin$par['aa'], CI.aa[1], CI.aa[2]))#
+points(opt.aa.BB.abraded.skin$par['aa'], opt.aa.BB.abraded.skin$value, pch = 8, col = 'blue')#
+abline(v = opt.aa.BB.abraded.skin$par['aa'], lty = 2)#
+## Plot bb profile#
+bb.best = opt.aa.BB.abraded.skin$par['bb']#
+neighborhood = max(0, which.min(bb.prof)-500):min(length(BBs), which.min(bb.prof)+1300)#
+threshold = LR.Threshold(opt.aa.BB.abraded.skin$value,1)#
+CI.bb = LR.CI(threshold, bb.prof, BBs)#
+plot(BBs[neighborhood], bb.prof[neighborhood], main = 'Beta profile, hamsters mixture model', xlab = 'beta', ylab = 'Neg log Likelihood', type = 'l')#
+abline(h = threshold, col = 'red')#
+text(3.5e-7, 60, sprintf('Best est = %.3g\nCI = %.3g - %.3g', opt.aa.BB.abraded.skin$par['BB'], CI.bb[1], CI.bb[2]))#
+points(opt.aa.BB.abraded.skin$par['BB'], opt.aa.BB.abraded.skin$value, pch = 8, col = 'blue')#
+abline(v = opt.aa.BB.abraded.skin$par['BB'], lty = 2)#
+dev.off()#
+# #####################################################################
+# ####   Repeat for rat data#
+# #####################################################################
+## Fit to abraded data:#
+opt.aa.BB.abraded.skin.rat = optim(c(aa = .3, BB = 6), fn = nll.aa.BB, p1 = p1.rat, outcome.vec = Outcomes.abraded.rat, D0.vec = Doses.abraded.rat, method = 'L-BFGS-B', lower = c(1e-6, 1e-6), upper = c(Inf,Inf))#
+opt.aa.BB.abraded.skin.rat#
+#
+# Plot the estimated pT distribution using the ML values of alpha and beta#
+plot(xx, dbeta(x = xx, shape1 = opt.aa.BB.abraded.skin.rat$par[1], shape2 = opt.aa.BB.abraded.skin.rat$par[2]), main = 'pT distribution from mixture model, rats', xlab = 'pT', ylab = 'probability density')
+save(opt.aa.BB.abraded.skin.rat, file = 'fitted_mixture_model_rats.RData')
+xx = seq(0, 1, by = .0001)
+#### THIS FUNCTION CALCULATES THE PROBABILITY OF OBSERVING ANY PARTICULAR BINARY INFECTION OUTCOME IN THE MIXTURE MODEL #
+####    *This probability is defined in equation 5 of the methods#
+####    *These probabilities will be used to calculate the overall likelihood of the data.#
+####    *Note, for D0 larger than 100, we truncate the range of summation to exclude values with #
+####     negligible probability density. Do this because it is computationally intractable to calculate #
+####     the exact binomial sum. Code runs too long and you use too much memory otherwise. This #
+####     approximation is highly accurate for large sample sizes.#
+#
+Prob.inf.given.dose.mixture = function(D0, alpha, beta, p1){#
+  # Can't approximate in the mixture model, because the distribution is overdispersed, and 3*sd spans the entire plausible range of DT values, from 0 to D0#
+  # Instead, to speed up code, run everything in parallel#
+  if(D0<=10^6){#
+    DT = 1:D0 # Get a vector of all plausible DT values, given D0, pt, p1#
+  prob.inf.given.D0 = sum( ( 1-((1-p1)^DT) )*TailRank::dbb(x=DT, N=D0, u = alpha, v = beta, log = FALSE))#pt to be#
+  }else{ # If D0 is very large, run sums in parallel#
+    clusterExport(cl = cl, varlist = c('p1', 'D0', 'alpha', 'beta', 'p1'), envir = environment())#
+    breaks = round(seq(0, (D0), length = 11))#
+    chunkmat = cbind(breaks[1:10]+1, breaks[2:11]) # Define the upper and lower limits of smaller chunks of possible DT values#
+    wr = function(brvec){ # Wrapper that takes a vector of limits and finds the partial sum of DT values falling in those indices#
+      DT = brvec[1]:brvec[2] # Set DT to take the values just in this smaller chunk#
+      sum( ( 1-((1-p1)^DT) )*TailRank::dbb(x=DT, N=D0, u = alpha, v = beta, log = FALSE)) # Sum across relevant DT values#
+    }#
+    prob.inf.given.D0 = sum(parApply(cl, X = chunkmat, MARGIN = 1, FUN = wr)) # Sum across contribution from all chunks#
+  }#
+  # 2. The above lines sum over all possible Db values#
+  # Output the results#
+  #if(prob.inf.given.D0<0|prob.inf.given.D0>1){stop('Prob.Inf.given.dose.mixture retuning prob outside [0,1]')}#
+  prob.inf.given.D0#
+}#
+# ## Test time for 10^8 dose#
+# aa = Sys.time()#
+# Prob.inf.given.dose.mixture(D0 = 10^8, alpha = .2, beta = .4, p1 = .18)#
+# Sys.time()-aa#
+## Note: To proove that that truncated sum above is a good approximation, do the following test#
+##         1. Source the function as defined above, and then run these three tests. Save the output values (approximate values)#
+##         2. Change the min.search value to 1, and the max.search value to D0 in the function definition. Re-source and re-run the tests to get the exact answers. (this will take longer to run, esp. for 10^8 dose)#
+##         3. Confirm that approximate outputs are equal to the exact outputs to at least 2 decimal places#
+# ## Test#
+# Prob.inf.given.dose.mixture(D0 = 10^6, alpha = 1.01, beta = 6, p1 = .18)#
+# Prob.inf.given.dose.mixture(D0 = 10^8, alpha = .02, beta = 6, p1 = .18)#
+# Prob.inf.given.dose.mixture(D0 = 10^6, alpha = 1.01, beta = 6, p1 = .02)#
+#
+#### THIS FUNCTION CALCULATES THE NEG LOG LIKELIHOOD OF A FULL NON-IP DATA SET#
+####    *Follow equation 0.12#
+####    *Output the neg log transformed likelihood#
+nll.aa.BB = function(pars, outcome.vec, D0.vec, p1){#
+  alpha = pars['aa']#
+  Beta = pars['BB']#
+  p_i = numeric(length(D0.vec)) #Get the probability of infection (success) given D0#
+  #note: P(failure, or no infection) = 1-p(success)#
+  for(ii in 1:length(D0.vec)){#
+    p_i[ii] = Prob.inf.given.dose.mixture(D0.vec[ii], alpha, Beta, p1)#
+  }#
+  # Extract the contribution of each infection trial to the likelihood#
+  # Include the probability of infection in the product if the outcome was infection#
+  # And 1-p_i if the outcome was not infection#
+  lk.vec = ifelse(outcome.vec == 1, p_i, 1-p_i)#
+  -sum(log(lk.vec)) # Output negative log likelihood#
+}#
+#####################################################################
+####   Maximize the likelihood to estimate pt for abraded data, hamsters#
+#####################################################################
+xx = seq(0, 1, by = .01) ## Set a vector of x values spanning 0 to 1 for plotting (below)#
+#
+## Fit to abraded data:#
+opt.aa.BB.abraded.skin = optim(c(aa = .3, BB = 6), fn = nll.aa.BB, p1 = p1, outcome.vec = Outcomes.abraded, D0.vec = Doses.abraded, method = 'L-BFGS-B', lower = c(1e-6, 1e-6), upper = c(Inf,Inf))#
+opt.aa.BB.abraded.skin#
+#
+# Plot the estimated pT distribution using the ML values of alpha and beta#
+plot(xx, dbeta(x = xx, shape1 = opt.aa.BB.abraded.skin$par[1], shape2 = opt.aa.BB.abraded.skin$par[2]), main = 'pT distribution from mixture model', xlab = 'pT', ylab = 'probability density')#
+#####################################################################
+####   Calculate 1D likelihood profiles (Mixture model), hamsters#
+#####################################################################
+## Define functions that constrains one parameter at a time, aa or BB:#
+nll.aa.prof = function(pars, fixed.alpha, outcome.vec, D0.vec, p1){#
+  alpha = fixed.alpha#
+  Beta = pars['BB']#
+  p_i = numeric(length(D0.vec)) #Get the probability of infection (success) given D0#
+  #note: P(failure, or no infection) = 1-p(success)#
+  for(ii in 1:length(D0.vec)){#
+    p_i[ii] = Prob.inf.given.dose.mixture(D0.vec[ii], alpha, Beta, p1)#
+  }#
+  lk.vec = ifelse(outcome.vec == 1, p_i, 1-p_i)#
+  -sum(log(lk.vec)) # Output negative log likelihood#
+}#
+nll.BB.prof = function(pars, fixed.beta, outcome.vec, D0.vec, p1){#
+  Beta = fixed.beta#
+  alpha = pars['aa']#
+  p_i = numeric(length(D0.vec)) #Get the probability of infection (success) given D0#
+  #note: P(failure, or no infection) = 1-p(success)#
+  for(ii in 1:length(D0.vec)){#
+    p_i[ii] = Prob.inf.given.dose.mixture(D0.vec[ii], alpha, Beta, p1)#
+  }#
+  lk.vec = ifelse(outcome.vec == 1, p_i, 1-p_i)#
+  -sum(log(lk.vec)) # Output negative log likelihood#
+}#
+#
+# ## Find likelihood profiles for alpha and beta#
+# aas = c(seq(0.001, 1, by = 0.001), seq(1.01, 6, by = 0.01))#
+# BBs = c(seq(0.001, 1, by = 0.001), seq(1.01, 10, by = 0.01))#
+# #
+#
+# # Calculte alpha profile:#
+# # Define a profile wrapper that takes only the fixed alpha input#
+# wrapper.aa.prof = function(aa.in){#
+#   optim(c(BB = 6), fn = nll.aa.prof, fixed.alpha = aa.in, p1 = p1, outcome.vec = Outcomes.abraded, D0.vec = Doses.abraded, method = 'L-BFGS-B', upper = Inf, lower = 1e-10)$value#
+#   }#
+# cl = makeCluster(detectCores()-1)#
+# clusterExport(cl = cl, varlist = ls())#
+# aa.prof = parSapply(cl = cl, X = aas, FUN = wrapper.aa.prof)#
+# stopCluster(cl)#
+# #
+# #
+# # Calculte beta profile:#
+# # Define a profile wrapper that takes only the fixed alpha input#
+# wrapper.bb.prof = function(BB.in){#
+#   optim(c(aa = .6), fn = nll.BB.prof, fixed.beta = BB.in, p1 = p1, method = 'L-BFGS-B', upper = Inf, lower = 1e-10, outcome.vec = Outcomes.abraded, D0.vec = Doses.abraded)$value}#
+# cl = makeCluster(detectCores()-1)#
+# clusterExport(cl = cl, varlist = ls())#
+# bb.prof = parSapply(cl = cl, X = BBs, FUN = wrapper.bb.prof)#
+# stopCluster(cl)#
+# save(aas, BBs, aa.prof, bb.prof, file = 'prof_mixtureModel.RData')#
+load('prof_mixtureModel.RData')#
+#
+## preview profiles#
+plot(aas, aa.prof)#
+plot(BBs, bb.prof)#
+#
+## Plot#
+pdf(plot6)#
+par(mfrow = c(1,2))#
+## Plot aa profile#
+aa.best = opt.aa.BB.abraded.skin$par['aa']#
+neighborhood = max(0, which.min(aa.prof)-300):min(length(aas), which.min(aa.prof)+700)#
+threshold = LR.Threshold(opt.aa.BB.abraded.skin$value,1)#
+CI.aa = LR.CI(threshold, aa.prof, aas)#
+plot(aas[neighborhood], aa.prof[neighborhood], main = 'Alpha profile, hamsters mixture model', xlab = 'alpha', ylab = 'Neg log Likelihood', type = 'l')#
+abline(h = threshold, col = 'red')#
+text(3.5e-7, 60, sprintf('Best est = %.3g\nCI = %.3g - %.3g', opt.aa.BB.abraded.skin$par['aa'], CI.aa[1], CI.aa[2]))#
+points(opt.aa.BB.abraded.skin$par['aa'], opt.aa.BB.abraded.skin$value, pch = 8, col = 'blue')#
+abline(v = opt.aa.BB.abraded.skin$par['aa'], lty = 2)#
+## Plot bb profile#
+bb.best = opt.aa.BB.abraded.skin$par['bb']#
+neighborhood = max(0, which.min(bb.prof)-500):min(length(BBs), which.min(bb.prof)+1300)#
+threshold = LR.Threshold(opt.aa.BB.abraded.skin$value,1)#
+CI.bb = LR.CI(threshold, bb.prof, BBs)#
+plot(BBs[neighborhood], bb.prof[neighborhood], main = 'Beta profile, hamsters mixture model', xlab = 'beta', ylab = 'Neg log Likelihood', type = 'l')#
+abline(h = threshold, col = 'red')#
+text(3.5e-7, 60, sprintf('Best est = %.3g\nCI = %.3g - %.3g', opt.aa.BB.abraded.skin$par['BB'], CI.bb[1], CI.bb[2]))#
+points(opt.aa.BB.abraded.skin$par['BB'], opt.aa.BB.abraded.skin$value, pch = 8, col = 'blue')#
+abline(v = opt.aa.BB.abraded.skin$par['BB'], lty = 2)#
+dev.off()#
+# #####################################################################
+# ####   Repeat for rat data#
+# #####################################################################
+## Fit to abraded data:#
+opt.aa.BB.abraded.skin.rat = optim(c(aa = .3, BB = 6), fn = nll.aa.BB, p1 = p1.rat, outcome.vec = Outcomes.abraded.rat, D0.vec = Doses.abraded.rat, method = 'L-BFGS-B', lower = c(1e-6, 1e-6), upper = c(Inf,Inf))#
+opt.aa.BB.abraded.skin.rat#
+#
+# Plot the estimated pT distribution using the ML values of alpha and beta#
+plot(xx, dbeta(x = xx, shape1 = opt.aa.BB.abraded.skin.rat$par[1], shape2 = opt.aa.BB.abraded.skin.rat$par[2]), main = 'pT distribution from mixture model, rats', xlab = 'pT', ylab = 'probability density')
