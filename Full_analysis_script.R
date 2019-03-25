@@ -37,7 +37,7 @@ rat.data = read.csv('raw_data/Ratdata.csv', header = T) # Rat data
 
 ####################### OUTPUTS ###################
 ## MAIN TEXT FIGURES
-## Note - Fig. 1 was a diagram drawn using MS Power Point
+## Note - Fig. 1 was a diagram drawn using MS Power Point. See template in "figures" subfolder.
 fig2 = 'manuscript_figures/Fig2_par_ests.pdf'
 fig3 = 'manuscript_figures/Fig3_model_fits.pdf'
 fig4 = 'manuscript_figures/Fig4_prob_inf_given_dose_and_route.pdf'
@@ -53,13 +53,20 @@ hamdat_summary = 'code_outputs/Hamster_data_table.csv'
 ratdat_summary = 'code_outputs/Rat_data_table.csv'
 #########################
 
-# Define functions necessary to calculate 95% CIs from 1D likelihood profiles
+####################################################################
+##########################  SECTION 00 ##############################
+####   
+####   Define functions necessary to calculate 95% CIs from 1D likelihood profiles
+####     These functions are called below
+####
+####################################################################
 ## This function calculates the threshold negative log likelihood (nll)
 ## Candidate paramters values whose profile nll better than this value are contained within the CI.
 LR.Threshold = function(NLL_best, df){
   threshold = qchisq(.95, df)/2+NLL_best
   threshold
 }
+
 ## This function inputs a nll threshold, a vector of profile nlls, and a corresponding vector of paramter grid points (pars.vec)
 ## This function outputs the highest and lowest parameter values in the grid that fall within the 95% profile CI
 LR.CI = function(threshold, nll.vec, pars.vec){
@@ -865,7 +872,7 @@ text(x = -.3, 36, 'C', font = 2, xpd = NA)
 
 par(fig = c(0.09+.25,0.4+.25, 0.18, .47), new = T) 
 plot((xx), (dbeta(xx, shape1 = opt.aa.BB.abraded.skin.rat$par['aa'], shape2 = opt.aa.BB.abraded.skin.rat$par['BB'])), lty = 2, col = ratcol, pch = 1, type = 'b', cex = .7, ylab = '', xlab = '')
-text(x = -.3, 630, 'D', font = 2, xpd = NA)
+text(x = -.3, 5.9, 'D', font = 2, xpd = NA)
 dev.off()
 }
 
@@ -1138,7 +1145,7 @@ segments(x0 = bounds[1,], y0 = ys, y1 = ys+.02, col = c(cols[c(1,2,4,3)], 'black
 segments(x0 = bounds[2,], y0 = ys, y1 = ys+.02, col = c(cols[c(1,2,4,3)], 'black'), lwd = 2)
 
 legend(4e9, y = .6, (c('intact', 'shaved', 'conjunctival', 'abraded', 'IP, no barrier')), col = rev(c('black', cols[c(3,4,2,1)])), fill = rev(c('black', cols[c(3,4,2,1)])), cex = .8, border = NA, lty = rev(c(1, 4, 1, 2, 3)), xpd = NA, lwd = rev(c(1,1,2,2,2,2)), bty = 'n')
-legend(1e3, y = 1.67, c('infection probable at this dose', 'infection almost certain at this dose'), lty = c(2, 1), cex = .8, xpd = NA, bty = 'n')
+legend(1e3, y = 1.67, c('infection possible at this dose', 'infection almost certain at this dose'), lty = c(2, 1), cex = .8, xpd = NA, bty = 'n')
 text(.1, 1.3, 'A', font = 2, xpd = NA)
 
 
@@ -1175,7 +1182,7 @@ segments(x0 = bounds[1,], y0 = ys, y1 = ys+.02, col = c(cols[3], 'black'),xpd = 
 segments(x0 = bounds[2,], y0 = ys, y1 = ys+.02, col = c(cols[3], 'black'),xpd = NA, lwd = 2)
 
 legend(4e9, y = .6, (c('abraded', 'IP, no barrier')), col = rev(c('black', cols[3])), fill = rev(c('black', cols[3])), cex = .8, border = NA, lty = (c(4,1)), xpd = NA, lwd = rev(c(1,3)), bty = 'n')
-legend(1e3, y = 1.5, c('infection probable at this dose', 'infection almost certain at this dose'), lty = c(2, 1), cex = .8, xpd = NA, bty = 'n')
+legend(1e3, y = 1.5, c('infection possible at this dose', 'infection almost certain at this dose'), lty = c(2, 1), cex = .8, xpd = NA, bty = 'n')
 text(.1, 1.3, 'B', font = 2, xpd = NA)
 dev.off()
 }
