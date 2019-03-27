@@ -18,7 +18,6 @@ setwd('~/Dropbox/R/Hamsters/') # Set working directory
 library(parallel)
 library(ggplot2)
 library(binom)
-library(RColorBrewer)
 library(gridExtra)
 library(reshape2)
 
@@ -401,27 +400,19 @@ p_inf_fun = function(dd.in, pp.in, aa.in, bb.in, species = 'hamsters'){
     exp(-dd.in*pc*pp.in)*dbeta(x = pc, shape1 = aa.in, shape2 = bb.in)
   }
   ## We need to integrate from 0 to 1
-  ## Do this in two parts (0,.5) and (.5,1)
-  ##  Use this strategy because when the beta function is bimodal, numerical integration direction from 0 to 1 can fail
-  ##  The two-part strategy is more robust to computational issues and gives the same result
-  
-  
-  ## This integral is a bit fussy. Calculating two integrals over the range [0,1] and choosing a sensible break point between the intergrals usually ensures convergence, as long as aa and bb are both > 0.1
+  ## This integral is a bit fussy. Calculating two integrals over the range [0,1] and choosing a sensible break point between the intergrals usually ensures convergence, as long as aa and bb are both > 0.1. Integrating over the full range, [0,1] often fails.
   if(species == 'hamsters'){
     ## Move the break point closer to 0 as the dose gets larger
-    ## The integral is not divergent, but converges slowly near pc=0, and convergence is particularly fussy at high doses when using parameters for hamsters
+    ## The integral requires a lot of subdivisions to converge near pc=0, and convergence is particularly fussy at high doses when using parameters fitted to hamster data
     ## Moving the break point close to 0 allows the integrator to place more subdivisions in the problematic range, [0, break.pt]
     ## This ultimately prevents the error: "integral is probably divergent"
   break.pt = min(10^-(log10(dd.in)/1.75), .95)
   }else if(species == 'rats'){
-    ## For rats, almost all the density is below pc = 0.02, so set the break point a tiny bit higher than that
+    ## Using the best-fit parameters for rats, almost all the density is around pc = 0.02, so set the break point a tiny bit higher than that
     break.pt = 0.025
   }else{
     error('species must be hamsters or rats')
   }
-  #print(break.pt)
-
-  
   int_low = integrate(f = integrand, lower = 0, upper = break.pt, rel.tol = 1e-10, stop.on.error = FALSE)
   int_high = integrate(f = integrand, lower = break.pt, upper = 1, rel.tol = 1e-10, stop.on.error = FALSE)
   1-(int_low$value+int_high$value)
@@ -452,7 +443,7 @@ nll.aa.BB = function(pars, pp, dose, nn, n.inf, sp = 'hamsters'){
   #print(c(aa, bb, -sum(log.lk.vec)))
   -sum(log.lk.vec) # Output total negative log likelihood
 }
-
+## Test function
 nll.aa.BB(pars = c(aa = .1, bb = .35), pp = pP, dose = abraded$dose, nn = abraded$n, n.inf = abraded$died)
 nll.aa.BB(pars = c(aa = .1, bb = .35), pp = pP, dose = abraded$dose, nn = abraded$n, n.inf = abraded$died, sp = 'rats')
 
@@ -471,23 +462,23 @@ plot(xx, dbeta(x = xx, shape1 = opt.aa.BB.abraded.skin$par[1], shape2 = opt.aa.B
 
 ## Find likelihood profiles for alpha and beta
 avals = c(seq(.001, .0249, by = .0001), seq(.025, .029, by = .001), seq(.03, 1.75, by = .01))
-bvals = c(seq(.001, .0249, by = .0001), seq(.025, .029, by = .001), seq(.03, 8, by = .01))
+bvals = c(seq(.001, .0249, by = .0001), seq(.025, .029, by = .001), seq(.03, 8.5, by = .01))
 aas = rep(avals, each = length(bvals))
 BBs = rep(bvals, length(avals))
 
-# # This takes a while to run. Could be parallellized, but I'll just save and re-load later
-# prof2d = aas*0
-# for(ii in 1:length(aas)){
-#   prof2d[ii]= tryCatch({
-#     nll.aa.BB(pars = c(aa = aas[ii], bb = BBs[ii]), pp = pP, dose = abraded$dose, nn = abraded$n, n.inf = abraded$died)
-#   }, warning = function(w) {
-#   }, error = function(e) {
-#     return(NA)
-#   })
-# }
-# # remove na values
-# prof2d = data.frame(aa = aas, bb = BBs, prof = prof2d)
-# save(prof2d, file = mixture_prof_output)
+# This takes a while to run. Could be parallellized, but I'll just save and re-load later
+prof2d = aas*0
+for(ii in 1:length(aas)){
+  prof2d[ii]= tryCatch({
+    nll.aa.BB(pars = c(aa = aas[ii], bb = BBs[ii]), pp = pP, dose = abraded$dose, nn = abraded$n, n.inf = abraded$died)
+  }, warning = function(w) {
+  }, error = function(e) {
+    return(NA)
+  })
+}
+# remove na values
+prof2d = data.frame(aa = aas, bb = BBs, prof = prof2d)
+save(prof2d, file = mixture_prof_output)
 load(mixture_prof_output)
 
 
@@ -570,15 +561,15 @@ BBs.r = seq(100, 30000, by = 100)
 aas.rat = rep(aas.r, each = length(BBs.r))
 BBs.rat = rep(BBs.r, times = length(aas.r))
 
-# #calculate 2D profile for aa and bb:
-# prof2d.rat = aas.rat*0
-# for(ii in 1:length(aas.rat)){
-#   prof2d.rat[ii] = tryCatch({nll.aa.BB(pars = c(aa = aas.rat[ii], bb = BBs.rat[ii]), pp = pP.rat, dose = abraded.rat$dose, nn = abraded.rat$n, n.inf = abraded.rat$died, sp = 'rats')},
-#                             warning = function(w) {return(NA)},
-#                             error = function(e) {return(NA)})
-# }
-# 
-# save(prof2d.rat, aas.rat, BBs.rat, file = mixture_prof_rats)
+#calculate 2D profile for aa and bb:
+prof2d.rat = aas.rat*0
+for(ii in 1:length(aas.rat)){
+  prof2d.rat[ii] = tryCatch({nll.aa.BB(pars = c(aa = aas.rat[ii], bb = BBs.rat[ii]), pp = pP.rat, dose = abraded.rat$dose, nn = abraded.rat$n, n.inf = abraded.rat$died, sp = 'rats')},
+                            warning = function(w) {return(NA)},
+                            error = function(e) {return(NA)})
+}
+
+save(prof2d.rat, aas.rat, BBs.rat, file = mixture_prof_rats)
 load(mixture_prof_rats)
 
 threshold = LR.Threshold(opt.aa.BB.abraded.rat.skin$value, 2) # Define threshold nll for 95% confidence envelope
@@ -595,6 +586,7 @@ plotdf = data.frame(alpha = aas.rat, beta = BBs.rat, nll = prof2d.rat) ## 2d pro
 plotdf$line_alphas = opt.pc.abraded.rat.skin$minimum*plotdf$beta/(1-opt.pc.abraded.rat.skin$minimum) ## Add coords for line representing alpha/(alpha+beta) = 0.02
 linepts = which(abs(plotdf$alpha/(plotdf$alpha+plotdf$beta) - opt.pc.abraded.rat.skin$minimum) < 5e-5)## extract (alpha, beta) pairs that fall on the line
 linepts = linepts[c(1, 15, 34)]
+plotdf[linepts, ]
 pp = ggplot(subset(plotdf, alpha <=1000))+geom_point(aes(x = alpha, y = beta, color = nll)) +
   scale_color_distiller(palette = "Spectral") +
   geom_contour(aes(x = alpha, y = beta, z = nll), binwidth = 2, color = 'gray20') +
@@ -640,8 +632,6 @@ bdplot
 
 
 outplot = arrangeGrob(pp, bdplot, nrow = 2)
-
-
 ggsave(filename = figS1, plot = outplot, width = 5, height = 7, dpi = 'print', device = png())
 
 
@@ -692,8 +682,6 @@ segments(x0 = log10(CI.lows), x1 = log10(CI.highs), y0 = yvals, bty = 'n', col =
 axis(2, at = yvals, labels = labs, las = 2)
 legend(-10, 2.5, c('hamsters', 'rats'), pch = c(21,22), yjust = .5, col = c('black', 'gray'), pt.bg = c(ham.col, rat.col), bty = 'n')
 abline(h = 2.5, lty = 2)
-# text(-9.5, 2.6, 'hamsters')
-# text(-9.5, 2.4, 'rats')
 mtext(3, text = 'A', at = -12, line = 1, font = 2, xpd = NA)
 xlims = par('usr')[1:2]
 
@@ -704,7 +692,6 @@ xx = seq(0, 1, by = 0.001)
 plot((xx), (dbeta(xx, shape1 = opt.aa.BB.abraded.skin$par['aa'], shape2 = opt.aa.BB.abraded.skin$par['bb'])), lty = 1, pch = 21, type = 'b', lwd = .5, ylab = 'density', xlab = expression('p'[c]), bg = ham.col)
 text(x = -.3, 36, 'B', font = 2, xpd = NA)
 
-#par(fig = c(0.09+.25,0.4+.25, 0.18, .47), new = T)
 plot((xx), (dbeta(xx, shape1 = opt.aa.BB.abraded.rat.skin$par['aa'], shape2 = opt.aa.BB.abraded.rat.skin$par['bb'])), lty = 1, bg = rat.col, pch = 22, type = 'b', lwd = .5, ylab = 'density', xlab = expression('p'[c]), col = 'gray')
 text(x = -.3, 655, 'C', font = 2, xpd = NA)
 dev.off()
@@ -748,13 +735,6 @@ p.inf.mixture = function(dd.in, pp.in, aa.in, bb.in, sp = 'hamsters'){
   sapply(dd.in, function(DD) {p_inf_fun(DD, pp.in, aa.in, bb.in, sp)})
 } 
 
-
-
-
-
-
-
-
 # Convert color to color + transparency
 col2alpha <- function(col, alpha) {
   col_rgb <- col2rgb(col)/255
@@ -792,33 +772,6 @@ pdf(fig3, height = 5, width = 7)
   #Abraded
   ## Basic model fit and data
   plot(dd, p.inf(dd, opt.pc.abraded.skin$minimum, pP), ylab = 'Probability of Infection', xlab = 'Dose', type = 'l', lwd = 2, ylim = c(0,1), log = 'x',  cex.lab = 1.1, xlim = c(1, 1e8))
-  ## Mixture model best fit
-  # ## Repeat for prob infection, given mixture model
-  # p.inf.mixture.CIs = function(dd.in, pp.in, aa.in, bb.in){
-  #   p_inf_fun.CIs = function(dd.in, pp.in, aa.in, bb.in){
-  #     integrand = function(pc){
-  #       exp(-dd.in*pc*pp.in)*dbeta(x = pc, shape1 = aa.in, shape2 = bb.in)
-  #     }
-  #     if(species == 'hamsters'){
-  #       break.pt = min(10^-(log10(dd.in)/1.75), .5)
-  #     }else if(species == 'rats'){
-  #       ## For rats, almost all the density is below pc = 0.02, so set the break point a tiny bit higher than that
-  #       break.pt = 0.025
-  #     }else{
-  #       error('species must be hamsters or rats')
-  #     }
-  #     #print(break.pt)
-  #     
-  #     
-  #     int_low = integrate(f = integrand, lower = 0, upper = break.pt, rel.tol = 1e-10, stop.on.error = FALSE)
-  #     int_high = integrate(f = integrand, lower = break.pt, upper = 1, rel.tol = 1e-10, stop.on.error = FALSE)
-  #     1-(int_low$value+int_high$value)
-  #   }
-  #   
-  #   
-  #   
-  #   sapply(dd.in, function(DD) {p_inf_fun(DD, pp.in, aa.in, bb.in, sp)})
-  # } 
   yy.mixture.plot = p.inf.mixture(dd.in = dd, aa.in = opt.aa.BB.abraded.skin$par['aa'], bb.in = opt.aa.BB.abraded.skin$par['bb'], pp.in = pP)
   lines(dd, yy.mixture.plot, lty = 3, lwd = 2)
   #Plot data CI bars
@@ -957,38 +910,32 @@ lines(dd, yy.mixture.plot, col = cols[3], lty = 4, lwd = 3)
 aa.coords.reduced = bb.coords.reduced = prof.vals.reduced = NULL
 threshold = LR.Threshold(opt.aa.BB.abraded.skin$value,  2)
 envelope = NULL
-prof.acc = subset(prof.acc, aa > 0.015 & bb > 0.015)
 for(ii in 1:8){
   ## The first condition verifies points near the threshold
   ## The second condition verifies that we're sampling relatively evenly from across the full range of beta values
-  valid = which(prof.acc$prof>threshold-.05 & prof.acc$bb > (-1+ii) & prof.acc$bb<= (0+ii))
+  valid = which(prof.acc$prof>threshold-.01 & prof.acc$bb > (-1+ii) & prof.acc$bb<= (0+ii))
   smp = sample(x = valid, size = min(25, length(valid)), replace = FALSE)
   envelope = rbind(envelope, prof.acc[smp, ])
 }
 # plot(envelope$aa, envelope$bb) ## The reduced set of points fall on the boundary of the confidence envelope
-# ## Now, calculate model-predicted probabilities of infection for each dose, using each pair of (alpha, beta) values in aa.coords.reduced, and bb.coords.reduced
+# ## Now, calculate model-predicted probabilities of infection for each dose, using each pair of (alpha, beta) values in the envelope
 wrapper = function(AA, BB){
-  p.inf.mixture(dd.in = dd, pp.in = pP, aa.in = AA, bb.in = BB)
+    tryCatch({
+      out = p.inf.mixture(dd.in = dd, pp.in = pP, aa.in =AA, bb.in = BB) },
+      error = function(e){
+      print(e)
+      out = rep(NA, 71)
+      },
+      warning = function(w){
+        print(w)
+      },
+      finally = function() {return(out)}
+      )
 }
 yy.CIs = mapply(FUN = wrapper, AA = envelope$aa, BB = envelope$bb)
-# ## Catch problems with integral convergence at high doses
-# redo = which(yy.CIs[,200]<.99) ## extract fits where integral convergence was a problem from the CI bands
-# ## visualize the problematic(alpha, beta) coordinates. All have values <0.02
-# envelope[redo,]
-# ## re-integrate using a direct integral from 0 to 1 for problem entries
-# for(ii in 1:length(redo)){
-#   yy.CIs[,redo[ii]] = tryCatch({
-#     out = p.inf.mixture_one_integral(dd.in = dd, pp.in = pP, aa.in = envelope$aa[redo[ii]], bb.in = envelope$bb[redo[ii]], sp = 'hamsters') }, 
-#     error = function(e){
-#     out = rep(NA, 71)
-#     },
-#     finally = function() {return(out)}
-#     )
-# }
-# 
-# 
-# plot(dd, yy.mixture.plot, log = 'x')
-# for(ii in 1:length(yy.CIs)){lines(dd, yy.CIs[,ii])}
+
+
+
 #### Define CI envelope for plotting as the highest and lowest y value resulting from estimates using all sampled points from the CI envelope
 yy.low = apply(X = yy.CIs, MARGIN = 1, FUN = min) # Estimates correspond to doses in dd
 yy.high = apply(X = yy.CIs, MARGIN = 1, FUN = max)
