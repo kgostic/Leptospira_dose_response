@@ -4,6 +4,8 @@ The script in this repository runs all analyses and generates all figures in the
 ### Mechanistic dose-response modeling of animal challenge data shows that intact skin is a crucial barrier to leptospiral infection.
 #### Authors: Gostic, Wunder, Bisht, Hamond, Julian, Ko & Lloyd-Smith.
 
+Scripts include code for our initial submission, and for a revised submission after responding to reviewer comments.
+
 
 * raw_data/ contains raw data files (MS word), and corresponding .csv files for input into R.
 * code_outputs/ contains .RData and .csv outputs from analyses.
