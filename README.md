@@ -6,6 +6,8 @@ The script in this repository runs all analyses and generates all figures in the
 
 Scripts include code for our initial submission, and for a revised submission after responding to reviewer comments.
 
+The numerical_algebra_check script verifies that the algebraic rearrangements in equations 4 and 5 of the main text return the same values.
+
 
 * raw_data/ contains raw data files (MS word), and corresponding .csv files for input into R.
 * code_outputs/ contains .RData and .csv outputs from analyses.
