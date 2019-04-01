@@ -18,6 +18,7 @@ setwd('~/Dropbox/R/Hamsters/') # Set working directory
 library(parallel)
 library(ggplot2)
 library(binom)
+library(RColorBrewer)
 library(gridExtra)
 library(reshape2)
 
@@ -641,7 +642,7 @@ ggsave(filename = figS1, plot = outplot, width = 5, height = 7, dpi = 'print', d
 AICcalc = function(n.pars, nll){
   2*n.pars+2*nll
 }
-AIC.basic.ham = AICcalc(n.pars = 2, nll = opt.pc.abraded.skin$value)
+AIC.basic.ham = AICcalc(n.pars = 2, nll = opt.pc.abraded.skin$objective)
 AIC.mixture.ham = AICcalc(n.pars = 3, nll = opt.aa.BB.abraded.skin$value)
 del.AIC.hamster = c(AIC.basic.ham, AIC.mixture.ham); del.AIC.hamster = del.AIC.hamster-min(del.AIC.hamster)
 del.AIC.hamster
